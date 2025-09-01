@@ -2717,7 +2717,6 @@ const applyGlobalTheme = (themeName) => {
     if (isListenAlongActive && currentSongIndex > -1 && character && character.playlist && character.playlist[currentSongIndex]) {
         const song = character.playlist[currentSongIndex];
         
-        // 找到当前高亮的歌词行索引
         let currentLyricIndex = -1;
         if (currentLyrics && currentLyrics.length > 0) {
             for (let i = currentLyrics.length - 1; i >= 0; i--) {
@@ -2729,15 +2728,14 @@ const applyGlobalTheme = (themeName) => {
         }
         
         let recentLyrics = "歌词正在加载中...";
-        // 如果找到了当前歌词，就截取它前后2句作为上下文
         if (currentLyricIndex > -1) {
             const start = Math.max(0, currentLyricIndex - 2);
             const end = Math.min(currentLyrics.length, currentLyricIndex + 3);
             recentLyrics = currentLyrics.slice(start, end)
                 .map(line => (line.time === currentLyrics[currentLyricIndex].time) 
-                    ? `> ${line.text} < (当前播放)` // 标记出正在播放的行
+                    ? `> ${line.text} < (当前播放)`
                     : line.text)
-                .join('\\n'); // 使用 \\n 告诉AI这是换行
+                .join('\\n');
         }
 
         const musicContext = `\n[系统知识：我们正在一起听歌。歌名：'${song.title}'，歌手：'${song.artist}'。这是当前播放的歌词片段：\n${recentLyrics}]`;
@@ -2750,6 +2748,7 @@ const applyGlobalTheme = (themeName) => {
     }
 
     if (apiFormat === 'gemini_native') {
+        // (此部分保持不变)
         const formatForGemini = (msg) => {
             if (!msg || typeof msg !== 'object' || msg.type === 'system' || typeof msg.sender !== 'string') return null;
             const role = msg.sender === 'user' ? 'user' : 'model';
@@ -2782,36 +2781,49 @@ const applyGlobalTheme = (themeName) => {
             "generationConfig": { "temperature": parseFloat(elements.temperatureSlider.value), "topP": parseFloat(elements.topPSlider.value) } 
         };
     } else { 
-                const formatForOpenAI = (msg) => {
+        // ==========================================================
+        // ============= 这里是我们进行核心修复的地方 =============
+        // ==========================================================
+        const formatForOpenAI = (msg) => {
             if (!msg || typeof msg !== 'object' || msg.type === 'system' || typeof msg.sender !== 'string') return null;
             const role = msg.sender === 'user' ? 'user' : 'assistant';
-
             const isVisualMessage = msg.sender === 'user' && ( (msg.type === 'image' && msg.imageUrl) || (msg.type === 'sticker' && msg.stickerUrl) );
-            
             if (isVisualMessage) {
                 const imageUrl = msg.imageUrl || msg.stickerUrl;
                 const textContent = msg.llmContent || msg.text || '用户发送了一张图片。';
                 return { role, content: [{ type: 'text', text: textContent }, { type: 'image_url', image_url: { url: imageUrl } }] };
             }
-
             const content = msg.llmContent || msg.text || '';
             if (!content.trim()) return null;
             return { role, content };
         };
         
-        const messages = [ { role: 'system', content: finalSystemPrompt } ];
-        
-        if (imageForSingleTurn) {
-            messages[0].content = [
-                { type: 'text', text: finalSystemPrompt },
-                { type: 'image_url', image_url: { url: imageForSingleTurn } }
-            ];
-        }
-        
+        let messages;
+
         if (history && history.length > 0) {
-             messages.push({ role: 'user', content: "好的，我会严格遵守以上所有指令。"});
-             messages.push({ role: 'assistant', content: "好的，我明白了，将严格遵循所有指令。"});
-             messages.push(...history.map(formatForOpenAI).filter(Boolean));
+            // **场景一：正常聊天** (有历史记录) - 保持原样，流程正确
+            messages = [ { role: 'system', content: finalSystemPrompt } ];
+            if (imageForSingleTurn) {
+                messages[0].content = [
+                    { type: 'text', text: finalSystemPrompt },
+                    { type: 'image_url', image_url: { url: imageForSingleTurn } }
+                ];
+            }
+            messages.push({ role: 'user', content: "好的，我会严格遵守以上所有指令。"});
+            messages.push({ role: 'assistant', content: "好的，我明白了，将严格遵循所有指令。"});
+            messages.push(...history.map(formatForOpenAI).filter(Boolean));
+        } else {
+            // **场景二：特殊功能调用** (没有历史记录) - 全新智能逻辑
+            // 我们直接把“操作手册”伪装成“用户的第一个订单”
+            let userContent = [{ type: 'text', text: finalSystemPrompt }];
+            if (imageForSingleTurn) {
+                userContent.push({ type: 'image_url', image_url: { url: imageForSingleTurn } });
+            }
+            
+            messages = [{
+                role: 'user',
+                content: userContent.length === 1 ? userContent[0].text : userContent
+            }];
         }
         
         return { model, messages, stream: false, temperature: parseFloat(elements.temperatureSlider.value), top_p: parseFloat(elements.topPSlider.value) };
